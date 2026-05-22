@@ -2,6 +2,7 @@ using BillingService.Entity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using BillingService.DTOs;
+using BillingService.Messaging;
 
 namespace BillingService.Controller
 {
@@ -11,10 +12,12 @@ namespace BillingService.Controller
     {
         private readonly AppDbContext _context;
         private readonly IHttpClientFactory _httpClientFactory;
-        public BillController(AppDbContext context, IHttpClientFactory httpClientFactory)
+        private readonly RabbitMQProducer _producer;
+        public BillController(AppDbContext context, IHttpClientFactory httpClientFactory, RabbitMQProducer producer)
         {
             _context = context;
             _httpClientFactory = httpClientFactory;
+            _producer = producer;
         }
         [HttpGet]
         public async Task<IActionResult> GetAll()
@@ -38,8 +41,8 @@ namespace BillingService.Controller
             var client = _httpClientFactory.CreateClient("UserService");
             var response = await client.GetAsync($"/api/User/{bill.UserId}");
 
-            if(!response.IsSuccessStatusCode) 
-                return BadRequest($"UserId{ bill.UserId} ko ton tai");
+            if (!response.IsSuccessStatusCode)
+                return BadRequest($"UserId{bill.UserId} ko ton tai");
 
             var user = await response.Content.ReadFromJsonAsync<UserDto>();
             bill.CustomerCode = user!.Username;
@@ -71,6 +74,23 @@ namespace BillingService.Controller
             _context.Bills.Remove(bill);
             await _context.SaveChangesAsync();
             return Ok("xoa thanh cong");
+        }
+
+        [HttpPut("pay/{id}")]
+        public async Task<IActionResult> Pay(int id)
+        {
+            var bill = await _context.Bills.FindAsync(id);
+            if (bill == null) return NotFound();
+            bill.IsPaid = true;
+            await _context.SaveChangesAsync();
+            await _producer.SendMessage("bill-paid", new
+            {
+                BillId = bill.Id,
+                CusstomerCode = bill.CustomerCode,
+                Amount = bill.Amount,
+                UserId = bill.UserId
+            });
+            return Ok("thanh toan thanh cong");
         }
     }
 }
